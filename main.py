@@ -8,7 +8,6 @@ client = genai.Client(
     api_key=os.environ.get("GEMINI_API_KEY"),
 )
 
-# 2. ツールと生成設定
 tools = [
     {
         'type': 'google_search',
@@ -21,7 +20,6 @@ generation_config = {
     'response_mime_type': 'application/json',
 }
 
-# 3. システムインストラクション
 system_instruction = """
 # 役割
 あなたはYouTubeショートの収益化特化型・台本作成エージェントです。視聴維持率が高く、最後まで見たくなる構成の台本を自動生成します。
@@ -34,7 +32,7 @@ system_instruction = """
 - 収益化・エンゲージメントを高めるため、冒頭3秒で強いフック（疑問・衝撃の事実）を入れ、最後にアクションを促す構成にします。
 
 # 出力フォーマット
-必ず以下のJSON形式のみで出力してください。
+必ず以下のJSON形式のみで出力してください。マークダウンの ```json やバッククォートは含めず、純粋なJSON文字列のみを出力してください。
 {
   "target_duration_seconds": 30,
   "hook_score": 85,
@@ -45,6 +43,21 @@ system_instruction = """
   ]
 }
 """
+
+def clean_and_parse_json(text: str) -> dict:
+    """
+    モデルの出力からMarkdownのバッククォートなどを除去して安全にJSONをパースする関数
+    """
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+    
+    return json.loads(cleaned)
 
 def generate_youtube_script(theme: str, duration: int = 30) -> dict:
     max_loops = 3
@@ -63,8 +76,6 @@ def generate_youtube_script(theme: str, duration: int = 30) -> dict:
                 generation_config=generation_config,
             )
             
-            # 【修正点】interactionsのレスポンスから正しくテキストを取り出す記述に変更
-            # steps[-1] の構造に応じたテキスト取得
             step = interaction.steps[-1]
             if hasattr(step, 'text'):
                 response_text = step.text
@@ -73,7 +84,9 @@ def generate_youtube_script(theme: str, duration: int = 30) -> dict:
             else:
                 response_text = str(step)
 
-            result = json.loads(response_text)
+            print(f"-> 取得した生テキスト: {response_text[:100]}...")
+            
+            result = clean_and_parse_json(response_text)
             
             score = result.get("hook_score", 0)
             print(f"-> 評価スコア: {score}点")
@@ -87,7 +100,7 @@ def generate_youtube_script(theme: str, duration: int = 30) -> dict:
         except Exception as e:
             print(f"[Error] 処理中にエラーが発生しました: {e}")
 
-    return json.loads(response_text)
+    return clean_and_parse_json(response_text)
 
 
 if __name__ == "__main__":
