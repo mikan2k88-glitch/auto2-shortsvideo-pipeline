@@ -92,7 +92,7 @@ def generate_youtube_script(theme: str, duration: int = 30) -> dict:
         print(f"\n[AI Agent] 試行回数 {attempt + 1}: 台本生成中...")
         try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.8-flash",
                 contents=user_prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
