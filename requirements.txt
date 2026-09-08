@@ -1,2 +1,5 @@
 google-genai
+fastapi
+uvicorn
+edge-tts
 python-dotenv
