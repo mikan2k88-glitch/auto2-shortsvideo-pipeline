@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-STREAMING_CHUNK:Installing system dependencies...
+STREAMING_CHUNK:Installing system dependencies for media processing...
 
 RUN apt-get update && apt-get install -y --no-install-recommends 
 
@@ -10,14 +10,14 @@ ffmpeg
 
 WORKDIR /app
 
-STREAMING_CHUNK:Copying and installing Python packages...
+STREAMING_CHUNK:Copying requirements and installing Python packages...
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-STREAMING_CHUNK:Exposing port and launching FastAPI with uvicorn...
+STREAMING_CHUNK:Exposing web service port and setting start command...
 
 EXPOSE 10000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
