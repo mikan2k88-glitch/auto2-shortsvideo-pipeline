@@ -166,3 +166,9 @@ async def generate_short_content(req: GenerationRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    # Render環境のPORT環境変数（デフォルト10000）を取得して常時待機サーバーを起動
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
