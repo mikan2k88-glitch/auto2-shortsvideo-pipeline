@@ -46,29 +46,56 @@ system_instruction = """
 }
 """
 
-def clean_and_parse_json(text: str) -> dict:
+def extract_text_from_step(step) -> str:
     """
-    TextContent等のラッパー表現やMarkdownが含まれていても、内部のJSONを安全に抽出してパースする関数
+    InteractionStep オブジェクト構造からテキスト部分を安全に取り出すヘルパー関数
     """
-    cleaned = text.strip()
+    if hasattr(step, 'text') and step.text:
+        return str(step.text)
     
-    # TextContent(text='...') のような構造で囲まれている場合、中のテキストを抽出する
-    match = re.search(r"text='(.*)'", cleaned, re.DOTALL)
-    if match:
-        cleaned = match.group(1)
-        # エスケープされた改行やクォートを復元
-        cleaned = cleaned.encode().decode('unicode-escape')
+    # content や output 配下のパーツを再帰的に抽出
+    content = getattr(step, 'content', None) or getattr(step, 'output', None)
+    if content:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if hasattr(item, 'text') and item.text:
+                    parts.append(str(item.text))
+                elif isinstance(item, dict) and 'text' in item:
+                    parts.append(str(item['text']))
+                elif hasattr(item, 'parts'):
+                    for p in item.parts:
+                        if hasattr(p, 'text') and p.text:
+                            parts.append(str(p.text))
+            if parts:
+                return "".join(parts)
+                
+    return str(step)
 
-    # Markdownのバッククォートがある場合の除去
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        cleaned = "\n".join(lines).strip()
+def clean_and_parse_json(raw_text: str) -> dict:
+    """
+    TextContent等のラッパー表現、Markdown記法、改行制御文字が含まれていても
+    最初の '{' から 最後の '}' を抽出して厳格かつ安全にJSON化する関数
+    """
+    if not raw_text:
+        raise ValueError("モデルからの出力テキストが空です。")
+
+    # 最初に見つかる '{' から 最後に見つかる '}' の範囲だけを正確に切り取る
+    match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+    if not match:
+        raise ValueError(f"有効なJSON構造が見つかりませんでした: {raw_text[:200]}")
     
-    return json.loads(cleaned)
+    json_str = match.group(0)
+
+    # strict=False を指定して文字列内の特殊文字・改行文字を許容してパース
+    try:
+        return json.loads(json_str, strict=False)
+    except json.JSONDecodeError:
+        # エスケープ文字の調整（タブ変換など）を入れて再試行
+        fixed_str = json_str.replace('\t', '\\t')
+        return json.loads(fixed_str, strict=False)
 
 def generate_youtube_script(theme: str, duration: int = 30) -> dict:
     max_loops = 3
@@ -88,14 +115,9 @@ def generate_youtube_script(theme: str, duration: int = 30) -> dict:
             )
             
             step = interaction.steps[-1]
-            if hasattr(step, 'text') and step.text:
-                response_text = step.text
-            elif hasattr(step, 'output') and step.output:
-                response_text = str(step.output)
-            else:
-                response_text = str(step)
+            response_text = extract_text_from_step(step)
 
-            print(f"-> 取得した生テキスト: {response_text[:100]}...")
+            print(f"-> 取得した生テキスト: {response_text[:80]}...")
             
             result = clean_and_parse_json(response_text)
             
