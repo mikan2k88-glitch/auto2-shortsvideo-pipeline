@@ -1,36 +1,32 @@
 import os
 import json
 import re
+import ast
 import asyncio
 import subprocess
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import edge_tts
 from google import genai
-from youtube_uploader import upload_to_youtube
+from google.genai import types
+
+try:
+    from youtube_uploader import upload_to_youtube
+except ImportError:
+    upload_to_youtube = None
 
 app = FastAPI(
     title="YouTube Shorts Auto Pipeline API",
     description="台本生成、音声合成、FFmpeg動画合成、YouTube投稿を一括処理するAPI"
 )
 
-client = genai.Client(
-    api_key=os.environ.get("GEMINI_API_KEY"),
-)
+def get_gemini_client():
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY が環境変数に設定されていません。")
+    return genai.Client(api_key=api_key)
 
-tools = [
-    {
-        'type': 'google_search',
-    },
-]
-
-generation_config = {
-    'max_output_tokens': 65536,
-    'thinking_level': 'medium',
-    'response_mime_type': 'application/json',
-}
-
-system_instruction = """
+SYSTEM_INSTRUCTION = """
 # 役割
 あなたはYouTubeショートの収益化特化型・台本作成エージェントです。視聴維持率が高く、最後まで見たくなる構成の台本を自動生成します。
 
@@ -42,7 +38,7 @@ system_instruction = """
 - 収益化・エンゲージメントを高めるため、冒頭3秒で強いフック（疑問・衝撃の事実）を入れ、最後にアクションを促す構成にします。
 
 # 出力フォーマット
-必ず以下のJSON形式のみで出力してください。
+必ず以下のJSON形式のみで出力してください（ダブルクォーテーションを厳格に使用すること）。
 {
   "target_duration_seconds": 30,
   "hook_score": 85,
@@ -57,61 +53,72 @@ system_instruction = """
 """
 
 def clean_and_parse_json(raw_text: str) -> dict:
-    """生テキストから最初の '{' から 最後の '}' を抽出してJSON化"""
+    """生テキストからJSON構造を抽出し、フォーマット崩れを自動修正して辞書化"""
     if not raw_text:
         raise ValueError("モデルからの出力テキストが空です。")
 
+    # JSON形式部分（最初と最後の波カッコ）を抽出
     match = re.search(r'\{.*\}', raw_text, re.DOTALL)
     if not match:
         raise ValueError(f"有効なJSON構造が見つかりませんでした: {raw_text[:200]}")
     
-    json_str = match.group(0)
+    json_str = match.group(0).strip()
 
+    # 1. 標準的な json.loads で試行
     try:
         return json.loads(json_str, strict=False)
     except json.JSONDecodeError:
-        fixed_str = json_str.replace('\t', '\\t')
-        return json.loads(fixed_str, strict=False)
+        pass
+
+    # 2. シングルクォート表記などの Python 辞書形式を ast.literal_eval で安全に救済
+    try:
+        parsed_eval = ast.literal_eval(json_str)
+        if isinstance(parsed_eval, dict):
+            return parsed_eval
+    except Exception:
+        pass
+
+    # 3. エスケープ補正後の最終試行
+    fixed_str = json_str.replace('\t', '\\t').replace('\n', '\\n')
+    return json.loads(fixed_str, strict=False)
 
 def generate_youtube_script(theme: str, duration: int = 30) -> dict:
+    client = get_gemini_client()
     max_loops = 3
-    user_input = f"テーマ: {theme} / 目標尺: {duration}秒のYouTubeショート台本を作成してください。"
-    response_text = ""
+    user_prompt = f"テーマ: {theme} / 目標尺: {duration}秒のYouTubeショート台本を作成してください。"
+    last_error = None
 
     for attempt in range(max_loops):
-        print(f"\n[AI Agent] 試行回数 {attempt + 1}: 台本生成と品質評価中...")
-        
+        print(f"\n[AI Agent] 試行回数 {attempt + 1}: 台本生成中...")
         try:
-            interaction = client.interactions.create(
-                model='models/gemini-3.8-flash',
-                input=user_input,
-                system_instruction=system_instruction,
-                tools=tools,
-                generation_config=generation_config,
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    response_mime_type="application/json",
+                    temperature=0.7,
+                )
             )
             
-            step = interaction.steps[-1]
-            if hasattr(step, 'text') and step.text:
-                response_text = str(step.text)
-            elif hasattr(step, 'output') and step.output:
-                response_text = str(step.output)
-            else:
-                response_text = str(step)
-
-            result = clean_and_parse_json(response_text)
+            raw_text = response.text
+            print(f"-> AI出力取得完了 (文字数: {len(raw_text) if raw_text else 0})")
+            
+            result = clean_and_parse_json(raw_text)
             score = result.get("hook_score", 0)
             print(f"-> 評価スコア: {score}点")
             
-            if score >= 80:
-                print(f"[Success] スコア基準（80点）をクリアしました！")
+            if score >= 80 or attempt == max_loops - 1:
+                print(f"[Success] 台本データの生成に成功しました。")
                 return result
             else:
-                print(f"[Retry] スコアが基準未満です。再推敲します...")
-                
-        except Exception as e:
-            print(f"[Error] 処理中にエラーが発生しました: {e}")
+                print(f"[Retry] スコアが基準未満（{score}点）のため再推敲します...")
 
-    return clean_and_parse_json(response_text)
+        except Exception as e:
+            last_error = e
+            print(f"[Error] 試行 {attempt + 1} 中にエラーが発生しました: {e}")
+
+    raise RuntimeError(f"台本生成に失敗しました: {last_error}")
 
 async def generate_voice_tts(text: str, output_path: str = "output_voice.mp3") -> str:
     """Edge-TTSを使用して日本語ナレーションを生成"""
@@ -121,9 +128,7 @@ async def generate_voice_tts(text: str, output_path: str = "output_voice.mp3") -
     return output_path
 
 def create_short_video_mp4(audio_path: str, output_mp4_path: str = "output_short.mp4") -> str:
-    """
-    FFmpegを使って音声ファイル（.mp3）からYouTube Shorts規格（9:16 / 1080x1920）の.mp4動画を生成
-    """
+    """FFmpegを使って音声ファイル（.mp3）からYouTube Shorts規格（9:16 / 1080x1920）の.mp4動画を生成"""
     print(f"--- FFmpegによる動画合成を開始: {audio_path} -> {output_mp4_path} ---")
     cmd = [
         "ffmpeg", "-y",
@@ -149,7 +154,7 @@ def create_short_video_mp4(audio_path: str, output_mp4_path: str = "output_short
 class GenerationRequest(BaseModel):
     theme: str = "YouTubeで収益化できるAI活用法"
     duration: int = 30
-    auto_upload: bool = True  # YouTubeへ自動アップロードするかどうか
+    auto_upload: bool = False  # YouTubeへ自動アップロードするかどうか
 
 @app.get("/")
 def read_root():
@@ -157,13 +162,7 @@ def read_root():
 
 @app.post("/generate")
 async def generate_short_content(req: GenerationRequest):
-    """
-    1. Geminiで台本生成
-    2. Edge-TTSで音声合成 (.mp3)
-    3. FFmpegでShorts縦型動画合成 (.mp4)
-    4. YouTube Data APIで自動アップロード
-    を一括実行するAPIエンドポイント
-    """
+    """1. 台本生成 2. 音声合成 3. FFmpeg動画合成 4. YouTube投稿を一括処理"""
     try:
         # 1. Geminiで台本を自動生成
         script_data = generate_youtube_script(theme=req.theme, duration=req.duration)
@@ -179,8 +178,8 @@ async def generate_short_content(req: GenerationRequest):
         script_data["audio_file"] = audio_filename
         script_data["video_file"] = video_filename
         
-        # 4. YouTubeへ自動アップロード
-        if req.auto_upload:
+        # 4. YouTubeへ自動アップロード（auto_uploadがTrueかつモジュールが存在する場合）
+        if req.auto_upload and upload_to_youtube is not None:
             try:
                 upload_res = upload_to_youtube(
                     video_path=video_filename,
