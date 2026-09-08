@@ -1,7 +1,7 @@
 import os
 import json
+import re
 from google import genai
-from google.genai import types
 
 # 1. クライアントの初期化
 client = genai.Client(
@@ -34,7 +34,7 @@ system_instruction = """
 - 収益化・エンゲージメントを高めるため、冒頭3秒で強いフック（疑問・衝撃の事実）を入れ、最後にアクションを促す構成にします。
 
 # 出力フォーマット
-必ず以下のJSON形式のみで出力してください。マークダウンの ```json やバッククォートは含めず、純粋なJSON文字列のみを出力してください。
+必ず以下のJSON形式のみで出力してください。
 {
   "target_duration_seconds": 30,
   "hook_score": 85,
@@ -48,9 +48,18 @@ system_instruction = """
 
 def clean_and_parse_json(text: str) -> dict:
     """
-    モデルの出力からMarkdownのバッククォートなどを除去して安全にJSONをパースする関数
+    TextContent等のラッパー表現やMarkdownが含まれていても、内部のJSONを安全に抽出してパースする関数
     """
     cleaned = text.strip()
+    
+    # TextContent(text='...') のような構造で囲まれている場合、中のテキストを抽出する
+    match = re.search(r"text='(.*)'", cleaned, re.DOTALL)
+    if match:
+        cleaned = match.group(1)
+        # エスケープされた改行やクォートを復元
+        cleaned = cleaned.encode().decode('unicode-escape')
+
+    # Markdownのバッククォートがある場合の除去
     if cleaned.startswith("```"):
         lines = cleaned.splitlines()
         if lines[0].startswith("```"):
@@ -70,7 +79,6 @@ def generate_youtube_script(theme: str, duration: int = 30) -> dict:
         print(f"\n[AI Agent] 試行回数 {attempt + 1}: 台本生成と品質評価中...")
         
         try:
-            # 推奨されている Interactions API を使用し、モデル名に 3.8-flash を指定
             interaction = client.interactions.create(
                 model='models/gemini-3.8-flash',
                 input=user_input,
@@ -79,7 +87,6 @@ def generate_youtube_script(theme: str, duration: int = 30) -> dict:
                 generation_config=generation_config,
             )
             
-            # interactions のステップから出力テキストを安全に取得
             step = interaction.steps[-1]
             if hasattr(step, 'text') and step.text:
                 response_text = step.text
