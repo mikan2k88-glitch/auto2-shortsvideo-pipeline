@@ -14,12 +14,6 @@ tools = [
     },
 ]
 
-generation_config = {
-    'max_output_tokens': 65536,
-    'thinking_level': 'medium',
-    'response_mime_type': 'application/json',
-}
-
 system_instruction = """
 # 役割
 あなたはYouTubeショートの収益化特化型・台本作成エージェントです。視聴維持率が高く、最後まで見たくなる構成の台本を自動生成します。
@@ -68,22 +62,20 @@ def generate_youtube_script(theme: str, duration: int = 30) -> dict:
         print(f"\n[AI Agent] 試行回数 {attempt + 1}: 台本生成と品質評価中...")
         
         try:
-            interaction = client.interactions.create(
+            # generate_content を使用して直接テキストを取得
+            response = client.models.generate_content(
                 model='models/gemini-3.8-flash',
-                input=user_input,
-                system_instruction=system_instruction,
-                tools=tools,
-                generation_config=generation_config,
+                contents=user_input,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    tools=tools,
+                    max_output_tokens=65536,
+                    thinking_level='medium',
+                    response_mime_type='application/json',
+                ),
             )
             
-            step = interaction.steps[-1]
-            if hasattr(step, 'text'):
-                response_text = step.text
-            elif hasattr(step, 'output'):
-                response_text = str(step.output)
-            else:
-                response_text = str(step)
-
+            response_text = response.text
             print(f"-> 取得した生テキスト: {response_text[:100]}...")
             
             result = clean_and_parse_json(response_text)
