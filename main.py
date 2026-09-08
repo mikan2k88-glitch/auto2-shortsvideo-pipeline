@@ -8,6 +8,20 @@ client = genai.Client(
     api_key=os.environ.get("GEMINI_API_KEY"),
 )
 
+# 2. ツール設定
+tools = [
+    {
+        'type': 'google_search',
+    },
+]
+
+generation_config = {
+    'max_output_tokens': 65536,
+    'thinking_level': 'medium',
+    'response_mime_type': 'application/json',
+}
+
+# 3. システムインストラクション
 system_instruction = """
 # 役割
 あなたはYouTubeショートの収益化特化型・台本作成エージェントです。視聴維持率が高く、最後まで見たくなる構成の台本を自動生成します。
@@ -56,19 +70,24 @@ def generate_youtube_script(theme: str, duration: int = 30) -> dict:
         print(f"\n[AI Agent] 試行回数 {attempt + 1}: 台本生成と品質評価中...")
         
         try:
-            # 正しい型定義（types.Tool と Google検索の指定）を使用
-            response = client.models.generate_content(
-                model='models/gemini-2.5-flash',
-                contents=user_input,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                    max_output_tokens=8192,
-                    response_mime_type="application/json",
-                ),
+            # 推奨されている Interactions API を使用し、モデル名に 3.8-flash を指定
+            interaction = client.interactions.create(
+                model='models/gemini-3.8-flash',
+                input=user_input,
+                system_instruction=system_instruction,
+                tools=tools,
+                generation_config=generation_config,
             )
             
-            response_text = response.text
+            # interactions のステップから出力テキストを安全に取得
+            step = interaction.steps[-1]
+            if hasattr(step, 'text') and step.text:
+                response_text = step.text
+            elif hasattr(step, 'output') and step.output:
+                response_text = str(step.output)
+            else:
+                response_text = str(step)
+
             print(f"-> 取得した生テキスト: {response_text[:100]}...")
             
             result = clean_and_parse_json(response_text)
