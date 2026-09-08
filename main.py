@@ -1,204 +1,192 @@
 import os
-import json
 import re
 import ast
-import asyncio
+import gc
+import json
 import subprocess
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+import asyncio
 import edge_tts
 from google import genai
 from google.genai import types
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from youtube_uploader import upload_to_youtube
 
-try:
-    from youtube_uploader import upload_to_youtube
-except ImportError:
-    upload_to_youtube = None
-
-app = FastAPI(
-    title="YouTube Shorts Auto Pipeline API",
-    description="台本生成、音声合成、FFmpeg動画合成、YouTube投稿を一括処理するAPI"
-)
+app = FastAPI(title="Shorts Video Generation API")
 
 def get_gemini_client():
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise ValueError("GEMINI_API_KEY が環境変数に設定されていません。")
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY 環境変数が設定されていません。")
     return genai.Client(api_key=api_key)
 
 SYSTEM_INSTRUCTION = """
-# 役割
-あなたはYouTubeショートの収益化特化型・台本作成エージェントです。視聴維持率が高く、最後まで見たくなる構成の台本を自動生成します。
+あなたはYouTubeショート動画の専門プロデューサーです。
+提供されたテーマから、YouTubeパートナープログラム（YPP）の収益化ポリシーを完全にクリアするオリジナルで魅力的な台本を作成してください。
 
-# 基本ルール
-- 尺（秒数）に応じて、最適な文字数とカット構成を動的に決定してください。
-  - 15秒版：約60文字（導入・核心のみ、テンポ最優先）
-  - 30秒版：約120文字（起承転結のコンパクト構成）
-  - 40秒版：約160〜180文字（詳細な解説・どんでん返しを含むフル構成）
-- 収益化・エンゲージメントを高めるため、冒頭3秒で強いフック（疑問・衝撃の事実）を入れ、最後にアクションを促す構成にします。
-
-# 出力フォーマット
-必ず以下のJSON形式のみで出力してください（ダブルクォーテーションを厳格に使用すること）。
+必ず以下のJSONフォーマットのみを出力してください（余計な装飾テキストや挨拶は不要です）:
 {
-  "target_duration_seconds": 30,
-  "hook_score": 85,
-  "title": "YouTubeショート用タイトル",
-  "description": "動画の概要欄説明テキスト #Shorts #AI",
-  "script_text": "ここに生成された台本の本文が入ります。",
-  "cut_allocations": [
-    {"start": 0.0, "end": 5.0, "description": "フック映像"},
-    {"start": 5.0, "end": 30.0, "description": "本体解説"}
-  ]
+    "title": "動画のタイトル（インパクト重視）",
+    "description": "動画の概要（ハッシュタグを含む）",
+    "narration": "ナレーション文章（自然で聞き取りやすく、指定された尺に収まる文字数）"
 }
 """
 
-def clean_and_parse_json(raw_text: str) -> dict:
-    """生テキストからJSON構造を抽出し、フォーマット崩れを自動修正して辞書化"""
-    if not raw_text:
-        raise ValueError("モデルからの出力テキストが空です。")
-
-    # JSON形式部分（最初と最後の波カッコ）を抽出
-    match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-    if not match:
-        raise ValueError(f"有効なJSON構造が見つかりませんでした: {raw_text[:200]}")
+def clean_and_parse_json(text: str) -> dict:
+    """Geminiの出力から変則的・崩れたJSONを強力に抽出・補正して辞書型を返す"""
+    text = re.sub(r'```json\s*', '', text)
+    text = re.sub(r'```\s*', '', text).strip()
     
-    json_str = match.group(0).strip()
+    # JSON構造を抽出
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        text = match.group(0)
 
-    # 1. 標準的な json.loads で試行
     try:
-        return json.loads(json_str, strict=False)
+        return json.loads(text)
     except json.JSONDecodeError:
-        pass
+        try:
+            # シングルクォートなどの代替パース
+            data = ast.literal_eval(text)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+        raise ValueError(f"JSONのパースに失敗しました: {text[:100]}...")
 
-    # 2. シングルクォート表記などの Python 辞書形式を ast.literal_eval で安全に救済
-    try:
-        parsed_eval = ast.literal_eval(json_str)
-        if isinstance(parsed_eval, dict):
-            return parsed_eval
-    except Exception:
-        pass
-
-    # 3. エスケープ補正後の最終試行
-    fixed_str = json_str.replace('\t', '\\t').replace('\n', '\\n')
-    return json.loads(fixed_str, strict=False)
-
-def generate_youtube_script(theme: str, duration: int = 30) -> dict:
+def generate_script(theme: str, duration: int = 30) -> dict:
+    """[台本部門] Gemini APIを使用して収益化対応の台本・概要欄・タイトルを生成"""
     client = get_gemini_client()
-    max_loops = 3
-    user_prompt = f"テーマ: {theme} / 目標尺: {duration}秒のYouTubeショート台本を作成してください。"
-    last_error = None
+    
+    char_count = int(duration * 6.5) # 1秒あたり6.5文字換算
+    prompt = f"テーマ: {theme}\n目標時間: {duration}秒 (ナレーション文字数: 約{char_count}文字)"
 
-    for attempt in range(max_loops):
-        print(f"\n[AI Agent] 試行回数 {attempt + 1}: 台本生成中...")
+    for attempt in range(1, 4):
+        print(f"[AI Agent] 試行回数 {attempt}: 台本生成と品質評価中...")
         try:
             response = client.models.generate_content(
                 model="gemini-3.8-flash",
-                contents=user_prompt,
+                contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
                     response_mime_type="application/json",
-                    temperature=0.7,
+                    temperature=0.7
                 )
             )
-            
-            raw_text = response.text
-            print(f"-> AI出力取得完了 (文字数: {len(raw_text) if raw_text else 0})")
-            
-            result = clean_and_parse_json(raw_text)
-            score = result.get("hook_score", 0)
-            print(f"-> 評価スコア: {score}点")
-            
-            if score >= 80 or attempt == max_loops - 1:
-                print(f"[Success] 台本データの生成に成功しました。")
-                return result
-            else:
-                print(f"[Retry] スコアが基準未満（{score}点）のため再推敲します...")
-
+            script_data = clean_and_parse_json(response.text)
+            if "title" in script_data and "narration" in script_data:
+                print("✨ 台本生成成功！")
+                return script_data
         except Exception as e:
-            last_error = e
-            print(f"[Error] 試行 {attempt + 1} 中にエラーが発生しました: {e}")
+            print(f"[Error] 処理中にエラーが発生しました: {e}")
+            if attempt == 3:
+                raise HTTPException(status_code=500, detail=f"台本生成に失敗しました: {e}")
 
-    raise RuntimeError(f"台本生成に失敗しました: {last_error}")
-
-async def generate_voice_tts(text: str, output_path: str = "output_voice.mp3") -> str:
-    """Edge-TTSを使用して日本語ナレーションを生成"""
+async def generate_voice_async(text: str, output_path: str = "output_voice.mp3"):
+    """[音声部門] Edge-TTSで日本語ナレーション音声を合成"""
     voice = "ja-JP-NanamiNeural"
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(output_path)
-    return output_path
+    print(f"✨ 音声ファイル作成完了: {output_path}")
 
-def create_short_video_mp4(audio_path: str, output_mp4_path: str = "output_short.mp4") -> str:
-    """FFmpegを使って音声ファイル（.mp3）からYouTube Shorts規格（9:16 / 1080x1920）の.mp4動画を生成"""
-    print(f"--- FFmpegによる動画合成を開始: {audio_path} -> {output_mp4_path} ---")
-    cmd = [
-        "ffmpeg", "-y",
+def generate_voice(text: str, output_path: str = "output_voice.mp3"):
+    asyncio.run(generate_voice_async(text, output_path))
+
+def create_short_video_mp4(audio_path: str, script_data: dict, output_path: str = "output_video.mp4") -> str:
+    """FFmpegを使用して音声ファイルとタイトルから9:16のShorts用縦型動画をメモリ軽量モードで自動合成する"""
+    print("--- [動画合成部門] FFmpegによる縦型動画(.mp4)の作成を開始（低メモリモード） ---")
+    
+    gc.collect()
+
+    title_text = script_data.get("title", "AI Shorts Video")
+    clean_title = re.sub(r'[\'":\\]', '', title_text)
+
+    # 1080x1920 縦型動画生成コマンド（-threads 1 でRender 512MB枠のOOMを回避）
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-y",
+        "-threads", "1",  # 512MBメモリ環境用にスレッド数を1に制限
         "-f", "lavfi",
-        "-i", "color=c=black:s=1080x1920:r=30",  # 黒背景の縦型動画
-        "-i", audio_path,                        # ナレーション音声
+        "-i", "color=c=black:s=1080x1920:r=24",
+        "-i", audio_path,
+        "-vf", (
+            f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
+            f"text='{clean_title}':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=(h-text_h)/2:"
+            f"box=1:boxcolor=black@0.6:boxborderw=20"
+        ),
         "-c:v", "libx264",
-        "-tune", "stillimage",
+        "-preset", "ultrafast",  # 最速・最低メモリ消費プリセット
+        "-tune", "zerolatency",
         "-c:a", "aac",
-        "-b:a", "192k",
-        "-pix_fmt", "yuv420p",
-        "-shortest",                             # 音声の長さにぴったり合わせる
-        output_mp4_path
+        "-b:a", "128k",
+        "-shortest",
+        output_path
     ]
-    
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"FFmpegエラー: {result.stderr}")
-    
-    print(f"✨ 動画生成完了: {output_mp4_path}")
-    return output_mp4_path
 
-class GenerationRequest(BaseModel):
-    theme: str = "YouTubeで収益化できるAI活用法"
+    try:
+        subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        print(f"✨ 縦型動画生成完了: {output_path}")
+        gc.collect()
+        return output_path
+    except subprocess.CalledProcessError as e:
+        print(f"❌ FFmpegエラー: {e.stderr.decode('utf-8', errors='ignore')}")
+        # フォールバック: より単純な色動画合成（テキストオーバーレイなしで軽量化）
+        simple_cmd = [
+            "ffmpeg", "-y", "-threads", "1",
+            "-f", "lavfi", "-i", "color=c=darkblue:s=720x1280:r=24",
+            "-i", audio_path,
+            "-c:v", "libx264", "-preset", "ultrafast",
+            "-c:a", "aac", "-shortest", output_path
+        ]
+        subprocess.run(simple_cmd, check=True)
+        gc.collect()
+        return output_path
+
+class GenerateRequest(BaseModel):
+    theme: str
     duration: int = 30
-    auto_upload: bool = False  # YouTubeへ自動アップロードするかどうか
+    auto_upload: bool = False
 
 @app.get("/")
 def read_root():
-    return {"status": "online", "message": "YouTube Shorts Pipeline API is running."}
+    return {"message": "AI Short Video Generation API is running!"}
 
 @app.post("/generate")
-async def generate_short_content(req: GenerationRequest):
-    """1. 台本生成 2. 音声合成 3. FFmpeg動画合成 4. YouTube投稿を一括処理"""
+def generate_endpoint(request: GenerateRequest):
     try:
-        # 1. Geminiで台本を自動生成
-        script_data = generate_youtube_script(theme=req.theme, duration=req.duration)
+        # 1. 台本生成
+        script_data = generate_script(request.theme, request.duration)
         
-        # 2. 音声ファイル（MP3）の作成
-        audio_filename = f"voice_{req.duration}s.mp3"
-        await generate_voice_tts(script_data["script_text"], audio_filename)
+        # 2. 音声合成
+        audio_file = "output_voice.mp3"
+        generate_voice(script_data["narration"], audio_file)
         
-        # 3. 音声から Shorts規格（9:16縦型）の MP4 動画を作成
-        video_filename = f"short_{req.duration}s.mp4"
-        create_short_video_mp4(audio_filename, video_filename)
+        # 3. 縦型動画合成 (.mp4)
+        video_file = "output_video.mp4"
+        create_short_video_mp4(audio_file, script_data, video_file)
+
+        # 4. YouTube自動投稿（フラグ指定 or 環境変数が存在する場合）
+        upload_result = None
+        has_yt_creds = os.environ.get("YOUTUBE_CLIENT_ID") and os.environ.get("YOUTUBE_REFRESH_TOKEN")
         
-        script_data["audio_file"] = audio_filename
-        script_data["video_file"] = video_filename
-        
-        # 4. YouTubeへ自動アップロード（auto_uploadがTrueかつモジュールが存在する場合）
-        if req.auto_upload and upload_to_youtube is not None:
+        if request.auto_upload or has_yt_creds:
             try:
-                upload_res = upload_to_youtube(
-                    video_path=video_filename,
-                    script_data=script_data,
-                    privacy_status="unlisted"  # 最初は「限定公開」で安全にテスト
-                )
-                script_data["youtube_upload"] = upload_res
-            except Exception as yt_err:
-                script_data["youtube_upload_error"] = str(yt_err)
-                print(f"⚠️ YouTubeアップロードでエラーが発生しました: {yt_err}")
+                print("--- [YouTube投稿部門] 動画の自動投稿を開始 ---")
+                upload_result = upload_to_youtube(video_file, script_data, privacy_status="unlisted")
+            except Exception as e:
+                print(f"⚠️ YouTubeアップロードでエラーが発生しました: {e}")
+                upload_result = {"status": "error", "message": str(e)}
 
         return {
             "status": "success",
-            "data": script_data
+            "script": script_data,
+            "audio_path": audio_file,
+            "video_path": video_file,
+            "youtube_upload": upload_result
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=10000)
