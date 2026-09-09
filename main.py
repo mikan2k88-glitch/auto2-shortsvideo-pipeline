@@ -73,7 +73,7 @@ def generate_auto_theme():
     - テーマ名のみ（20文字以内）で回答してください。説明文は不要です。
     """
     
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-3.8-flash")
     response = model.generate_content(prompt)
     return response.text.strip()
 
@@ -99,7 +99,7 @@ async def generate_video(req: VideoRequest):
     """
     
     prompt = f"テーマ「{theme}」で、{req.duration}秒のYouTubeショート動画の台本を作成してください。"
-    model = genai.GenerativeModel("gemini-1.5-flash", system_instruction=system_instruction)
+    model = genai.GenerativeModel("gemini-3.8-flash", system_instruction=system_instruction)
     response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
     
     script = json.loads(response.text)
