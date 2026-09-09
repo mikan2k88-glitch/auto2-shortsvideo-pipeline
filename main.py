@@ -88,15 +88,15 @@ async def generate_video(req: VideoRequest):
     if not theme:
         theme = generate_auto_theme()
     
-    # 1. 台本生成 (Gemini API - 音声合成最適化プロンプト)
+    # 1. 台本生成 (Gemini API - 自然な会話・文章フロー優先)
     system_instruction = """
     あなたはYouTubeショート動画のヒットメーカーです。
     視聴者のスクロールの手を止め、最後まで離脱させない構成で台本を作成してください。
     
     【ナレーション文章（narration）作成時の重要ルール】
-    - 音声読み上げ（TTS）が自然なイントネーションになるよう、間違いやすい漢字や専門用語は「ひらがな」で書いてください。
-    - 息継ぎや間（ポーズ）を適切に取るため、読点「、」をこまめに入れてください。
-    - 1文を短く区切り、リズムよく読めるテンポにしてください。
+    - 音声読み上げが自然に聞こえるよう、流れるような抑揚のある口語体（話し言葉）で書いてください。
+    - 意味のつながりを重視し、文章を無理に不自然な位置で短く区切らないでください。
+    - 読点「、」は自然なポーズが取れる適切な位置にのみ置いてください。
     
     【出力フォーマット】
     JSON形式で出力してください:
@@ -115,11 +115,10 @@ async def generate_video(req: VideoRequest):
     
     # 2. 音声合成 (Edge-TTS)
     voice_path = "output_voice.mp3"
-    # ja-JP-KeitaNeural (男性解説風) または ja-JP-NanamiNeural (女性解説風)
-    communicate = edge_tts.Communicate(script["narration"], "ja-JP-KeitaNeural")
+    communicate = edge_tts.Communicate(script["narration"], "ja-JP-NanamiNeural")
     await communicate.save(voice_path)
     
-    # 3. 実際の動画ファイル生成 (MoviePy - メモリ節約版)
+    # 3. 実際の動画ファイル生成 (MoviePy - メモリ512MB制限対策版)
     video_path = "output_video.mp4"
     audio_clip = AudioFileClip(voice_path)
     
