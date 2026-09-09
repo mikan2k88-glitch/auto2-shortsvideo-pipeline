@@ -6,7 +6,10 @@ from pydantic import BaseModel
 import google.generativeai as genai
 import edge_tts
 from supabase import create_client, Client
-from moviepy.editor import AudioFileClip, ColorClip
+
+# MoviePy v2.0+ 対応インポート
+from moviepy.audio.io.AudioFileClip import AudioFileClip
+from moviepy.video.VideoClip import ColorClip
 
 app = FastAPI()
 
@@ -114,9 +117,9 @@ async def generate_video(req: VideoRequest):
     video_path = "output_video.mp4"
     audio_clip = AudioFileClip(voice_path)
     
-    # 縦型ショート動画サイズ (1080x1920)、長さは音声の尺に自動調整
+    # 縦型ショート動画サイズ (1080x1920)・黒背景
     video_clip = ColorClip(size=(1080, 1920), color=(0, 0, 0), duration=audio_clip.duration)
-    video_clip = video_clip.set_audio(audio_clip)
+    video_clip = video_clip.with_audio(audio_clip)
     
     # MP4ファイルとしてレンダリング出力
     video_clip.write_videofile(
@@ -127,7 +130,7 @@ async def generate_video(req: VideoRequest):
         logger=None
     )
     
-    # クリップのリソースを解放
+    # クリップのリソース解放
     audio_clip.close()
     video_clip.close()
     
