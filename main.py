@@ -88,10 +88,15 @@ async def generate_video(req: VideoRequest):
     if not theme:
         theme = generate_auto_theme()
     
-    # 1. 台本生成 (Gemini API)
+    # 1. 台本生成 (Gemini API - 音声合成最適化プロンプト)
     system_instruction = """
     あなたはYouTubeショート動画のヒットメーカーです。
     視聴者のスクロールの手を止め、最後まで離脱させない構成で台本を作成してください。
+    
+    【ナレーション文章（narration）作成時の重要ルール】
+    - 音声読み上げ（TTS）が自然なイントネーションになるよう、間違いやすい漢字や専門用語は「ひらがな」で書いてください。
+    - 息継ぎや間（ポーズ）を適切に取るため、読点「、」をこまめに入れてください。
+    - 1文を短く区切り、リズムよく読めるテンポにしてください。
     
     【出力フォーマット】
     JSON形式で出力してください:
@@ -110,29 +115,27 @@ async def generate_video(req: VideoRequest):
     
     # 2. 音声合成 (Edge-TTS)
     voice_path = "output_voice.mp3"
-    communicate = edge_tts.Communicate(script["narration"], "ja-JP-NanamiNeural")
+    # ja-JP-KeitaNeural (男性解説風) または ja-JP-NanamiNeural (女性解説風)
+    communicate = edge_tts.Communicate(script["narration"], "ja-JP-KeitaNeural")
     await communicate.save(voice_path)
     
-    # 3. 実際の動画ファイル生成 (MoviePy - メモリ512MB制限対策版)
+    # 3. 実際の動画ファイル生成 (MoviePy - メモリ節約版)
     video_path = "output_video.mp4"
     audio_clip = AudioFileClip(voice_path)
     
-    # メモリ節約のため解像度を 540x960 (アスペクト比9:16) に設定
     video_clip = ColorClip(size=(540, 960), color=(0, 0, 0), duration=audio_clip.duration)
     video_clip = video_clip.with_audio(audio_clip)
     
-    # Renderのメモリオーバーフロー(OOM)を防ぐパラメータ設定
     video_clip.write_videofile(
         video_path,
-        fps=15,             # 15fpsでメモリ・CPU消費量を激減
+        fps=15,
         codec="libx264",
         audio_codec="aac",
-        threads=1,          # シングルスレッドでメモリバーストを防止
-        preset="ultrafast", # 最速設定でメモリ滞留時間を最小化
+        threads=1,
+        preset="ultrafast",
         logger=None
     )
     
-    # クリップのリソース解放
     audio_clip.close()
     video_clip.close()
     
