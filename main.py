@@ -113,20 +113,22 @@ async def generate_video(req: VideoRequest):
     communicate = edge_tts.Communicate(script["narration"], "ja-JP-NanamiNeural")
     await communicate.save(voice_path)
     
-    # 3. 実際の動画ファイル生成 (MoviePy)
+    # 3. 実際の動画ファイル生成 (MoviePy - メモリ512MB制限対策版)
     video_path = "output_video.mp4"
     audio_clip = AudioFileClip(voice_path)
     
-    # 縦型ショート動画サイズ (1080x1920)・黒背景
-    video_clip = ColorClip(size=(1080, 1920), color=(0, 0, 0), duration=audio_clip.duration)
+    # メモリ節約のため解像度を 540x960 (アスペクト比9:16) に設定
+    video_clip = ColorClip(size=(540, 960), color=(0, 0, 0), duration=audio_clip.duration)
     video_clip = video_clip.with_audio(audio_clip)
     
-    # MP4ファイルとしてレンダリング出力
+    # Renderのメモリオーバーフロー(OOM)を防ぐパラメータ設定
     video_clip.write_videofile(
         video_path,
-        fps=24,
+        fps=15,             # 15fpsでメモリ・CPU消費量を激減
         codec="libx264",
         audio_codec="aac",
+        threads=1,          # シングルスレッドでメモリバーストを防止
+        preset="ultrafast", # 最速設定でメモリ滞留時間を最小化
         logger=None
     )
     
