@@ -6,6 +6,7 @@ from pydantic import BaseModel
 import google.generativeai as genai
 import edge_tts
 from supabase import create_client, Client
+from moviepy.editor import AudioFileClip, ColorClip
 
 app = FastAPI()
 
@@ -109,9 +110,26 @@ async def generate_video(req: VideoRequest):
     communicate = edge_tts.Communicate(script["narration"], "ja-JP-NanamiNeural")
     await communicate.save(voice_path)
     
-    # 3. 動画作成処理（既存の処理）
+    # 3. 実際の動画ファイル生成 (MoviePy)
     video_path = "output_video.mp4"
-    # ※動画生成ロジックは既存のものをそのまま実行
+    audio_clip = AudioFileClip(voice_path)
+    
+    # 縦型ショート動画サイズ (1080x1920)、長さは音声の尺に自動調整
+    video_clip = ColorClip(size=(1080, 1920), color=(0, 0, 0), duration=audio_clip.duration)
+    video_clip = video_clip.set_audio(audio_clip)
+    
+    # MP4ファイルとしてレンダリング出力
+    video_clip.write_videofile(
+        video_path,
+        fps=24,
+        codec="libx264",
+        audio_codec="aac",
+        logger=None
+    )
+    
+    # クリップのリソースを解放
+    audio_clip.close()
+    video_clip.close()
     
     # 4. YouTube自動投稿
     youtube_result = None
