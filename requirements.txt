@@ -1,10 +1,9 @@
-google-genai
 fastapi
 uvicorn
+google-generativeai
 edge-tts
-python-dotenv
+supabase
 google-api-python-client
-google-auth
 google-auth-oauthlib
 google-auth-httplib2
-supabase
+pydantic
