@@ -93,32 +93,32 @@ def generate_voice(text: str, output_path: str = "output_voice.mp3"):
     asyncio.run(generate_voice_async(text, output_path))
 
 def create_short_video_mp4(audio_path: str, script_data: dict, output_path: str = "output_video.mp4") -> str:
-    """FFmpegを使用して音声ファイルとタイトルから9:16のShorts用縦型動画をメモリ軽量モードで自動合成する"""
-    print("--- [動画合成部門] FFmpegによる縦型動画(.mp4)の作成を開始（低メモリモード） ---")
+    """FFmpegを使用して音声ファイルとタイトルから9:16のShorts用縦型動画を超軽量モードで自動合成する"""
+    print("--- [動画合成部門] FFmpegによる縦型動画(.mp4)の作成を開始（超低メモリモード） ---")
     
     gc.collect()
 
     title_text = script_data.get("title", "AI Shorts Video")
     clean_title = re.sub(r'[\'":\\]', '', title_text)
 
-    # 1080x1920 縦型動画生成コマンド（-threads 1 でRender 512MB枠のOOMを回避）
+    # 540x960 (9:16) 15fps 超軽量縦型動画生成コマンド（512MB無料枠専用）
     ffmpeg_cmd = [
         "ffmpeg",
         "-y",
-        "-threads", "1",  # 512MBメモリ環境用にスレッド数を1に制限
+        "-threads", "1",
         "-f", "lavfi",
-        "-i", "color=c=black:s=1080x1920:r=24",
+        "-i", "color=c=black:s=540x960:r=15",
         "-i", audio_path,
         "-vf", (
             f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
-            f"text='{clean_title}':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=(h-text_h)/2:"
-            f"box=1:boxcolor=black@0.6:boxborderw=20"
+            f"text='{clean_title}':fontcolor=white:fontsize=28:x=(w-text_w)/2:y=(h-text_h)/2:"
+            f"box=1:boxcolor=black@0.6:boxborderw=10"
         ),
         "-c:v", "libx264",
-        "-preset", "ultrafast",  # 最速・最低メモリ消費プリセット
+        "-preset", "ultrafast",
         "-tune", "zerolatency",
         "-c:a", "aac",
-        "-b:a", "128k",
+        "-b:a", "96k",
         "-shortest",
         output_path
     ]
@@ -130,10 +130,10 @@ def create_short_video_mp4(audio_path: str, script_data: dict, output_path: str 
         return output_path
     except subprocess.CalledProcessError as e:
         print(f"❌ FFmpegエラー: {e.stderr.decode('utf-8', errors='ignore')}")
-        # フォールバック: より単純な色動画合成（テキストオーバーレイなしで軽量化）
+        # フォールバック: 超軽量単色背景（720x1280）
         simple_cmd = [
             "ffmpeg", "-y", "-threads", "1",
-            "-f", "lavfi", "-i", "color=c=darkblue:s=720x1280:r=24",
+            "-f", "lavfi", "-i", "color=c=darkblue:s=540x960:r=15",
             "-i", audio_path,
             "-c:v", "libx264", "-preset", "ultrafast",
             "-c:a", "aac", "-shortest", output_path
