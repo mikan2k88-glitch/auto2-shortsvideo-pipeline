@@ -82,6 +82,38 @@ def generate_script(theme: str, duration: int = 30) -> dict:
             if attempt == 3:
                 raise HTTPException(status_code=500, detail=f"台本生成に失敗しました: {e}")
 
+def generate_auto_theme() -> str:
+    """[テーマ自動選定部門] テーマ未指定時、Geminiが収益化可能かつバズるテーマを1つ考案"""
+    client = get_gemini_client()
+    prompt = """
+YouTubeショートで再生数が伸びやすく、視聴者の好奇心を刺激する「1つの具体的テーマ」を考案してください。
+
+【対象ジャンル例（この中からランダムに1つ切り口を選択）】
+- 心理学・人間行動・会話術
+- 科学・歴史の面白い雑学
+- 生活・ヘルスケア・脳科学の豆知識
+- お金・経済・インフレの仕組み
+- 未来予測・最新テクノロジー
+
+【条件】
+- 視聴者が「え、それ本当？」と思わず手を止めるフックのある具体的タイトル/テーマ案
+- YouTube収益化ポリシー（YPP）に適合するクリーンで教育的・雑学的な内容
+- 挨拶や余計な装飾テキストは一切不要。テーマのテキスト（1行）のみを出力してください。
+"""
+    try:
+        print("--- [テーマ自動選定部門] バズる収益化テーマを考案中... ---")
+        response = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.9)
+        )
+        theme = response.text.strip().replace('"', '').replace('「', '').replace('」', '')
+        print(f"✨ 自動考案されたテーマ: {theme}")
+        return theme
+    except Exception as e:
+        print(f"⚠️ テーマ自動生成エラー: {e}")
+        return "人間関係が劇的にラクになる心理学的なスルー技術"
+
 async def generate_voice_async(text: str, output_path: str = "output_voice.mp3"):
     """[音声部門] Edge-TTSで日本語ナレーション音声を合成"""
     voice = "ja-JP-NanamiNeural"
@@ -143,7 +175,7 @@ def create_short_video_mp4(audio_path: str, script_data: dict, output_path: str 
         return output_path
 
 class GenerateRequest(BaseModel):
-    theme: str
+    theme: str = None  # テーマ未指定(None)の場合は自動生成
     duration: int = 30
     auto_upload: bool = False
 
@@ -154,18 +186,21 @@ def read_root():
 @app.post("/generate")
 def generate_endpoint(request: GenerateRequest):
     try:
-        # 1. 台本生成
-        script_data = generate_script(request.theme, request.duration)
+        # 1. テーマの決定（未指定なら自動考案）
+        selected_theme = request.theme if request.theme else generate_auto_theme()
         
-        # 2. 音声合成
+        # 2. 台本生成
+        script_data = generate_script(selected_theme, request.duration)
+        
+        # 3. 音声合成
         audio_file = "output_voice.mp3"
         generate_voice(script_data["narration"], audio_file)
         
-        # 3. 縦型動画合成 (.mp4)
+        # 4. 縦型動画合成 (.mp4)
         video_file = "output_video.mp4"
         create_short_video_mp4(audio_file, script_data, video_file)
 
-        # 4. YouTube自動投稿（フラグ指定 or 環境変数が存在する場合）
+        # 5. YouTube自動投稿（フラグ指定 or 環境変数が存在する場合）
         upload_result = None
         has_yt_creds = os.environ.get("YOUTUBE_CLIENT_ID") and os.environ.get("YOUTUBE_REFRESH_TOKEN")
         
@@ -179,6 +214,7 @@ def generate_endpoint(request: GenerateRequest):
 
         return {
             "status": "success",
+            "theme": selected_theme,
             "script": script_data,
             "audio_path": audio_file,
             "video_path": video_file,
