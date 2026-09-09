@@ -118,7 +118,7 @@ async def generate_video(req: VideoRequest):
     youtube_url = None
     if req.auto_upload:
         from youtube_uploader import upload_to_youtube
-        youtube_result = upload_to_youtube(video_path, script["title"], script["description"])
+        youtube_result = upload_to_youtube(video_path, script)
         if isinstance(youtube_result, dict):
             youtube_url = youtube_result.get("video_url")
     
