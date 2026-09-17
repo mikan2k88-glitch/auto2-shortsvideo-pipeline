@@ -5,14 +5,20 @@ import gc
 from typing import List
 from google import genai
 
+# Veo 3.1 仕様: 1クリップあたりの尺は4秒固定
 VEO_FIXED_DURATION = 4
 
+# プライマリおよびフォールバックモデル
 VEO_MODELS = [
     "veo-3.1-generate-preview",
     "veo-3.1-fast-generate-preview"
 ]
 
 def generate_veo_clip(prompt: str, output_path: str) -> str:
+    """
+    Veo 3.1 APIを呼び出し、指定されたプロンプトで4秒の背景動画を生成。
+    429 Rate Limit発生時は指数バックオフ（30s, 60s, 90s）で自動リトライを実行。
+    """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("GEMINI_API_KEY が設定されていません。")
@@ -23,9 +29,8 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
     operation = None
     last_error = None
     
-    # モデルごとの試行
     for model_name in VEO_MODELS:
-        # 429エラー対策のバックオリトライ（最大3回）
+        # 429 エラー対策のバックオリトライ（最大3回）
         for attempt in range(3):
             try:
                 print(f"[Veo Engine] モデル '{model_name}' (試行 {attempt + 1}/3) で送信中...")
@@ -44,9 +49,9 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
                 err_str = str(e)
                 print(f"[Veo Engine] モデル '{model_name}' エラー: {e}")
                 
-                # 429 RESOURCE_EXHAUSTED の場合はウェイトを挟んでリトライ
+                # 429 RESOURCE_EXHAUSTED の場合は Quota リセットを待って再試行
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                    wait_time = (attempt + 1) * 15
+                    wait_time = (attempt + 1) * 30  # 30秒、60秒、90秒
                     print(f"[Veo Engine] 429 レート制限検知。{wait_time}秒待機して再試行します...")
                     time.sleep(wait_time)
                 else:
@@ -58,7 +63,7 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
     if not operation:
         raise RuntimeError(f"すべてのVeoモデルでの動画生成要求に失敗しました: {last_error}")
     
-    # ポーリング処理
+    # ポーリング処理（10秒インターバルで最新状態を取得）
     max_retries = 40
     retries = 0
     while not operation.done and retries < max_retries:
@@ -70,6 +75,7 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
     if not operation.done:
         raise TimeoutError("Veo の動画生成がタイムアウトしました。")
         
+    # レスポンスオブジェクトの抽出
     result = getattr(operation, "response", None) or getattr(operation, "result", None)
     if callable(result):
         result = result()
@@ -86,6 +92,7 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
         
     generated_video = generated_videos[0]
     
+    # 動画バイナリデータの取得
     video_bytes = None
     if hasattr(generated_video, "video_bytes") and generated_video.video_bytes:
         video_bytes = generated_video.video_bytes
@@ -106,6 +113,7 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
 
 
 def get_audio_duration_ffmpeg(file_path: str) -> float:
+    """ffprobe を使用して音声の正確な長さを取得（メモリ使用量ゼロ）"""
     cmd = [
         "ffprobe", "-v", "error",
         "-show_entries", "format=duration",
@@ -117,6 +125,9 @@ def get_audio_duration_ffmpeg(file_path: str) -> float:
 
 
 def build_final_video_with_cuts(voice_path: str, video_prompts: List[str], output_path: str = "output_video.mp4") -> str:
+    """
+    複数クリップの生成・ffmpegによるストリーミング結合および音声合成処理
+    """
     if not video_prompts:
         raise ValueError("video_prompts が空です。")
 
@@ -130,17 +141,19 @@ def build_final_video_with_cuts(voice_path: str, video_prompts: List[str], outpu
     try:
         for i, prompt in enumerate(video_prompts):
             if i > 0:
-                print("[Video Engine] レート制限回避のため、次のクリップ生成まで10秒待機...")
-                time.sleep(10)
+                print("[Video Engine] レート制限回避のため、次のクリップ生成まで15秒待機...")
+                time.sleep(15)
                 
             clip_path = f"veo_clip_{i}.mp4"
             generate_veo_clip(prompt, clip_path)
             generated_files.append(clip_path)
 
+        # ffmpeg 用の concat リスト生成
         with open(list_file_path, "w", encoding="utf-8") as f:
             for path in generated_files:
                 f.write(f"file '{path}'\n")
 
+        # ffmpeg による無再符号化結合
         print("[Video Engine] ffmpeg で動画クリップを結合中...")
         concat_cmd = [
             "ffmpeg", "-y", "-f", "concat", "-safe", "0",
@@ -148,6 +161,7 @@ def build_final_video_with_cuts(voice_path: str, video_prompts: List[str], outpu
         ]
         subprocess.run(concat_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+        # 音声尺に合わせたループ合成および最終レンダリング
         print("[Video Engine] ffmpeg で音声合成および最終レンダリング中...")
         final_cmd = [
             "ffmpeg", "-y", "-stream_loop", "-1",
@@ -162,6 +176,7 @@ def build_final_video_with_cuts(voice_path: str, video_prompts: List[str], outpu
         print(f"[Video Engine] 最終動画レンダリング成功: {output_path}")
 
     finally:
+        # 一時ファイルの削除とガベージコレクション
         for p in generated_files + [list_file_path, temp_concat_path]:
             if os.path.exists(p):
                 try:
