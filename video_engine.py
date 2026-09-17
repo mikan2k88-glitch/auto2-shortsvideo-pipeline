@@ -53,12 +53,12 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
     if not operation:
         raise RuntimeError(f"すべてのVeoモデルでの動画生成要求に失敗しました: {last_error}")
     
-    # 完了までポーリング待機（タイムアウト: 最大3分）
+    # 完了までポーリング待機 (google-genai SDKの正解仕様: client.operations.get)
     max_retries = 36
     retries = 0
     while not operation.done and retries < max_retries:
         time.sleep(5)
-        operation = client.models.get_videos_operation(operation.name)
+        operation = client.operations.get(operation)
         retries += 1
         
     if not operation.done:
