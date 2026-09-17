@@ -8,8 +8,8 @@ from moviepy.audio.io.AudioFileClip import AudioFileClip
 from moviepy.video.io.VideoFileClip import VideoFileClip
 from moviepy.video.compositing.CompositeVideoClip import concatenate_videoclips
 
-# Veo 3.1 APIの仕様に基づく固定生成秒数 (4〜8の範囲で指定)
-VEO_FIXED_DURATION = 5
+# Veo 3.1 仕様: 指定可能な秒数は 4, 6, 8 のいずれか固定
+VEO_FIXED_DURATION = 4
 
 # Veo 3.1 正式モデルリスト
 VEO_MODELS = [
@@ -19,7 +19,7 @@ VEO_MODELS = [
 
 def generate_veo_clip(prompt: str, output_path: str) -> str:
     """
-    Veo 3.1 APIを呼び出し、指定されたプロンプトで背景動画を生成
+    Veo 3.1 APIを呼び出し、指定されたプロンプトで4秒の背景動画を生成
     """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
