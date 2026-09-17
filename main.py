@@ -3,7 +3,7 @@ import json
 import random
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import google.generativeai as genai
+from google import genai
 import edge_tts
 from supabase import create_client, Client
 
@@ -17,7 +17,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
+# 新SDKクライアントの初期化
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Supabaseクライアントの初期化
 supabase: Client = None
@@ -68,8 +69,10 @@ def generate_auto_theme():
     過去のテーマ一覧: {json.dumps(existing_themes, ensure_ascii=False)}
     - テーマ名のみ（20文字以内）で回答してください。
     """
-    model = genai.GenerativeModel("gemini-3.8-flash")
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
     return response.text.strip()
 
 @app.post("/generate")
@@ -78,7 +81,6 @@ async def generate_video(req: VideoRequest):
     if not theme:
         theme = generate_auto_theme()
     
-    # 1. 台本 & Veo用カット割りプロンプトの生成
     system_instruction = """
     あなたはYouTubeショート動画のプロデューサーです。
     指定されたテーマに基づき、動画台本とVeo 3.1（動画生成AI）用の英語プロンプト群を作成してください。
@@ -103,8 +105,15 @@ async def generate_video(req: VideoRequest):
     """
     
     prompt = f"テーマ「{theme}」で、{req.duration}秒のYouTubeショート動画用コンテンツを作成してください。"
-    model = genai.GenerativeModel("gemini-3.8-flash", system_instruction=system_instruction)
-    response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+    
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+        config={
+            "system_instruction": system_instruction,
+            "response_mime_type": "application/json"
+        }
+    )
     
     script = json.loads(response.text)
     
