@@ -13,15 +13,11 @@ VEO_MODELS = [
 ]
 
 def generate_veo_clip(prompt: str, output_path: str) -> str:
-    """
-    Veo 3.1 APIを呼び出し、指定されたプロンプトで4秒の背景動画を生成
-    """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("GEMINI_API_KEY が設定されていません。")
         
     client = genai.Client(api_key=api_key)
-    
     print(f"[Veo Engine] クリップ生成開始: {prompt[:40]}...")
     
     operation = None
@@ -48,39 +44,45 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
     if not operation:
         raise RuntimeError(f"すべてのVeoモデルでの動画生成要求に失敗しました: {last_error}")
     
-    max_retries = 36
+    # ポーリング処理の強化
+    max_retries = 40
     retries = 0
     while not operation.done and retries < max_retries:
-        time.sleep(5)
+        time.sleep(10)  # 429回避のため10秒インターバル
         operation = client.operations.get(operation)
         retries += 1
+        print(f"[Veo Engine] ポーリング中... ({retries}/{max_retries})")
         
     if not operation.done:
         raise TimeoutError("Veo の動画生成がタイムアウトしました。")
         
-    result = operation.result
+    # 最新の operation オブジェクトから response / result を取得
+    result = getattr(operation, "response", None) or getattr(operation, "result", None)
     
-    # --- 動画オブジェクト取得のフォールバック強化 ---
-    generated_videos = None
-    if hasattr(result, "generated_videos") and result.generated_videos:
-        generated_videos = result.generated_videos
-    elif hasattr(result, "response") and hasattr(result.response, "generated_videos"):
-        generated_videos = result.response.generated_videos
-        
+    # Callable 形式（メソッド）の場合に対応
+    if callable(result):
+        result = result()
+
+    if not result:
+        print(f"[Veo Engine] Full Operation Object: {operation}")
+        raise RuntimeError("Veo の Operation からレスポンスオブジェクトを取得できませんでした。")
+
+    # 動画リスト抽出
+    generated_videos = getattr(result, "generated_videos", None)
+    if not generated_videos and hasattr(result, "response"):
+        generated_videos = getattr(result.response, "generated_videos", None)
+
     if not generated_videos:
-        print(f"[Veo Engine] Raw Result: {result}")
         raise RuntimeError(f"Veo から動画データが返されませんでした。(Result: {result})")
         
     generated_video = generated_videos[0]
     
-    # --- バイナリデータ抽出のフォールバック ---
+    # バイトデータ抽出
     video_bytes = None
     if hasattr(generated_video, "video_bytes") and generated_video.video_bytes:
         video_bytes = generated_video.video_bytes
     elif hasattr(generated_video, "video") and hasattr(generated_video.video, "bytes"):
         video_bytes = generated_video.video.bytes
-    elif hasattr(generated_video, "video") and hasattr(generated_video.video, "video_bytes"):
-        video_bytes = generated_video.video.video_bytes
 
     if not video_bytes:
         try:
@@ -96,7 +98,6 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
 
 
 def get_audio_duration_ffmpeg(file_path: str) -> float:
-    """ffprobe を使用して音声の正確な長さを取得"""
     cmd = [
         "ffprobe", "-v", "error",
         "-show_entries", "format=duration",
@@ -108,9 +109,6 @@ def get_audio_duration_ffmpeg(file_path: str) -> float:
 
 
 def build_final_video_with_cuts(voice_path: str, video_prompts: List[str], output_path: str = "output_video.mp4") -> str:
-    """
-    ffmpeg コマンドの直接呼び出しによる超軽量レンダリング
-    """
     if not video_prompts:
         raise ValueError("video_prompts が空です。")
 
@@ -133,33 +131,22 @@ def build_final_video_with_cuts(voice_path: str, video_prompts: List[str], outpu
 
         print("[Video Engine] ffmpeg で動画クリップを結合中...")
         concat_cmd = [
-            "ffmpeg", "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", list_file_path,
-            "-c", "copy",
-            temp_concat_path
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", list_file_path, "-c", "copy", temp_concat_path
         ]
         subprocess.run(concat_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         print("[Video Engine] ffmpeg で音声合成および最終レンダリング中...")
         final_cmd = [
-            "ffmpeg", "-y",
-            "-stream_loop", "-1",
-            "-i", temp_concat_path,
-            "-i", voice_path,
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "28",
-            "-c:a", "aac",
-            "-b:a", "128k",
+            "ffmpeg", "-y", "-stream_loop", "-1",
+            "-i", temp_concat_path, "-i", voice_path,
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+            "-c:a", "aac", "-b:a", "128k",
             "-t", str(audio_duration),
-            "-map", "0:v:0",
-            "-map", "1:a:0",
+            "-map", "0:v:0", "-map", "1:a:0",
             output_path
         ]
         subprocess.run(final_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        
         print(f"[Video Engine] 最終動画レンダリング成功: {output_path}")
 
     finally:
