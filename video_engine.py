@@ -11,9 +11,16 @@ from moviepy.video.compositing.CompositeVideoClip import concatenate_videoclips
 # Veo APIの仕様に基づく固定生成秒数
 VEO_FIXED_DURATION = 5
 
+# Veoモデルの正確なフォールバックリスト
+VEO_MODELS = [
+    "veo-3.1",
+    "veo-3.1-flash",
+    "veo-2.0"
+]
+
 def generate_veo_clip(prompt: str, output_path: str) -> str:
     """
-    Veo 3.1 Flashlight APIを呼び出し、指定されたプロンプトで5秒の背景動画を生成
+    Veo APIを呼び出し、指定されたプロンプトで5秒の背景動画を生成（モデルフォールバック付き）
     """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -23,15 +30,30 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
     
     print(f"[Veo Engine] クリップ生成開始: {prompt[:40]}...")
     
-    # Veo 3.1 Flashlight 呼び出し
-    operation = client.models.generate_videos(
-        model="veo-3.1-flashlight-predict-001",
-        prompt=prompt,
-        config={
-            "aspect_ratio": "9:16",
-            "duration_seconds": VEO_FIXED_DURATION,
-        }
-    )
+    operation = None
+    last_error = None
+    
+    # Veoモデルのフォールバック試行
+    for model_name in VEO_MODELS:
+        try:
+            print(f"[Veo Engine] モデル '{model_name}' で試行中...")
+            operation = client.models.generate_videos(
+                model=model_name,
+                prompt=prompt,
+                config={
+                    "aspect_ratio": "9:16",
+                    "duration_seconds": VEO_FIXED_DURATION,
+                }
+            )
+            print(f"[Veo Engine] モデル '{model_name}' での呼び出し成功！")
+            break
+        except Exception as e:
+            print(f"[Veo Engine] モデル '{model_name}' エラー: {e}")
+            last_error = e
+            continue
+            
+    if not operation:
+        raise RuntimeError(f"すべてのVeoモデルでの動画生成要求に失敗しました: {last_error}")
     
     # 完了までポーリング待機（タイムアウト: 最大3分）
     max_retries = 36
@@ -42,11 +64,11 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
         retries += 1
         
     if not operation.done:
-        raise TimeoutError("Veo 3.1 の動画生成がタイムアウトしました。")
+        raise TimeoutError("Veo の動画生成がタイムアウトしました。")
         
     result = operation.result
     if not result.generated_videos:
-        raise RuntimeError("Veo 3.1 から動画データが返されませんでした。")
+        raise RuntimeError("Veo から動画データが返されませんでした。")
         
     generated_video = result.generated_videos[0]
     
