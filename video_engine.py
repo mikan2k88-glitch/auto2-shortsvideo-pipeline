@@ -53,7 +53,7 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
     if not operation:
         raise RuntimeError(f"すべてのVeoモデルでの動画生成要求に失敗しました: {last_error}")
     
-    # 完了までポーリング待機 (google-genai SDKの正解仕様: client.operations.get)
+    # 完了までポーリング待機
     max_retries = 36
     retries = 0
     while not operation.done and retries < max_retries:
@@ -70,9 +70,25 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
         
     generated_video = result.generated_videos[0]
     
+    # 動画バイナリデータの安全な取得（video_bytes 属性または video.bytes）
+    video_bytes = None
+    if hasattr(generated_video, "video_bytes") and generated_video.video_bytes:
+        video_bytes = generated_video.video_bytes
+    elif hasattr(generated_video, "video") and hasattr(generated_video.video, "bytes"):
+        video_bytes = generated_video.video.bytes
+    elif hasattr(generated_video, "video") and hasattr(generated_video.video, "video_bytes"):
+        video_bytes = generated_video.video.video_bytes
+
+    if not video_bytes:
+        # SDK経由のファイル直接ダウンロード試行
+        try:
+            video_bytes = client.files.download(file=generated_video.video)
+        except Exception as e:
+            raise RuntimeError(f"動画バイナリの抽出に失敗しました: {e}")
+
     # バイナリ書き出し
     with open(output_path, "wb") as f:
-        f.write(generated_video.video.image_bytes)
+        f.write(video_bytes)
         
     print(f"[Veo Engine] クリップ保存完了: {output_path}")
     return output_path
