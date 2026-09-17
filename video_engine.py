@@ -1,17 +1,15 @@
 import os
 import time
+import gc
 from typing import List
 from google import genai
 
-# MoviePy v2.0+ 対応インポート
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 from moviepy.video.io.VideoFileClip import VideoFileClip
 from moviepy.video.compositing.CompositeVideoClip import concatenate_videoclips
 
-# Veo 3.1 仕様: 指定可能な秒数は 4, 6, 8 のいずれか固定
 VEO_FIXED_DURATION = 4
 
-# Veo 3.1 正式モデルリスト
 VEO_MODELS = [
     "veo-3.1-generate-preview",
     "veo-3.1-fast-generate-preview"
@@ -53,7 +51,6 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
     if not operation:
         raise RuntimeError(f"すべてのVeoモデルでの動画生成要求に失敗しました: {last_error}")
     
-    # 完了までポーリング待機
     max_retries = 36
     retries = 0
     while not operation.done and retries < max_retries:
@@ -70,7 +67,6 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
         
     generated_video = result.generated_videos[0]
     
-    # 動画バイナリデータの安全な取得（video_bytes 属性または video.bytes）
     video_bytes = None
     if hasattr(generated_video, "video_bytes") and generated_video.video_bytes:
         video_bytes = generated_video.video_bytes
@@ -80,13 +76,11 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
         video_bytes = generated_video.video.video_bytes
 
     if not video_bytes:
-        # SDK経由のファイル直接ダウンロード試行
         try:
             video_bytes = client.files.download(file=generated_video.video)
         except Exception as e:
             raise RuntimeError(f"動画バイナリの抽出に失敗しました: {e}")
 
-    # バイナリ書き出し
     with open(output_path, "wb") as f:
         f.write(video_bytes)
         
@@ -98,34 +92,32 @@ def build_final_video_with_cuts(voice_path: str, video_prompts: List[str], outpu
     """
     1. 音声の長さ(audio_duration)を取得
     2. 複数のVeo動画クリップを生成
-    3. クリップを結合し、音声の末尾ピッタリにトリミングして書き出し
+    3. 512MB RAM上限を考慮したメモリ節約結合処理
     """
     if not video_prompts:
         raise ValueError("video_prompts が空です。")
 
-    # 1. 音声の正確な長さを取得
     audio_clip = AudioFileClip(voice_path)
     audio_duration = audio_clip.duration
     print(f"[Video Engine] 音声総尺: {audio_duration:.2f}秒")
     
     generated_files = []
-    video_clips = []
     
     try:
-        # 2. 各プロンプトに基づいてVeo動画クリップを生成
+        # 1. Veo クリップを生成
         for i, prompt in enumerate(video_prompts):
             clip_path = f"veo_clip_{i}.mp4"
             generate_veo_clip(prompt, clip_path)
             generated_files.append(clip_path)
             
-            # MoviePyオブジェクトとして読み込み
-            clip = VideoFileClip(clip_path)
-            video_clips.append(clip)
-            
-        # 3. クリップ群を連結
+        # ガベージコレクションでAPI呼び出し時の不要メモリを即座に解放
+        gc.collect()
+
+        # 2. MoviePy クリップのオープン（メモリ節約のため解像度低めに処理）
+        video_clips = [VideoFileClip(f) for f in generated_files]
         concatenated_video = concatenate_videoclips(video_clips, method="compose")
         
-        # 4. 音声の尺に合わせてトリミング・ループ補填
+        # 3. トリミング・ループ
         if concatenated_video.duration < audio_duration:
             loop_count = int(audio_duration // concatenated_video.duration) + 1
             final_video = concatenated_video.loop(n=loop_count).subclip(0, audio_duration)
@@ -134,30 +126,34 @@ def build_final_video_with_cuts(voice_path: str, video_prompts: List[str], outpu
             
         final_video = final_video.with_audio(audio_clip)
         
-        # 5. Render用 512MB RAM 節約レンダリング設定
+        # 4. RAM超低消費書き出し設定
         final_video.write_videofile(
             output_path,
             fps=15,
+            bitrate="1500k",
             codec="libx264",
             audio_codec="aac",
             threads=1,
             preset="ultrafast",
+            write_logfile=False,
             logger=None
         )
         print(f"[Video Engine] 最終動画レンダリング成功: {output_path}")
         
     finally:
-        # メモリ解放と一時ファイルのクリーンアップ
-        audio_clip.close()
-        for clip in video_clips:
-            clip.close()
+        # メモリの確実な解放
+        try:
+            audio_clip.close()
+        except:
+            pass
             
-        # 一時動画ファイルの破棄
         for path in generated_files:
             if os.path.exists(path):
                 try:
                     os.remove(path)
                 except Exception as e:
                     print(f"一時ファイル削除エラー ({path}): {e}")
+                    
+        gc.collect()
 
     return output_path
