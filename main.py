@@ -7,9 +7,8 @@ import google.generativeai as genai
 import edge_tts
 from supabase import create_client, Client
 
-# MoviePy v2.0+ 対応インポート
-from moviepy.audio.io.AudioFileClip import AudioFileClip
-from moviepy.video.VideoClip import ColorClip
+# 分離した映像エンジンの読み込み
+from video_engine import build_final_video_with_cuts
 
 app = FastAPI()
 
@@ -34,7 +33,6 @@ class VideoRequest(BaseModel):
     auto_upload: bool = True
 
 def get_existing_themes():
-    """Supabaseから過去に生成したテーマ一覧を取得"""
     if not supabase:
         return []
     try:
@@ -45,7 +43,6 @@ def get_existing_themes():
         return []
 
 def save_video_log(theme: str, script: dict, youtube_url: str = None):
-    """生成結果をSupabaseに保存"""
     if not supabase:
         return
     try:
@@ -62,52 +59,50 @@ def save_video_log(theme: str, script: dict, youtube_url: str = None):
         print(f"Supabase保存エラー: {e}")
 
 def generate_auto_theme():
-    """過去のテーマと被らないバズりテーマを自動生成"""
     existing_themes = get_existing_themes()
-    
     categories = ["行動心理学・脳科学", "歴史の裏説・雑学", "お金・経済のカラクリ", "日常生活の裏技・科学", "健康・人体ミステリー"]
     chosen_category = random.choice(categories)
     
     prompt = f"""
     YouTubeショートでバズる「{chosen_category}」ジャンルのテーマを1つ厳選して提案してください。
-    
-    【条件】
-    - 過去に作成した以下のテーマとは絶対に被らない新しいテーマにしてください。
     過去のテーマ一覧: {json.dumps(existing_themes, ensure_ascii=False)}
-    - テーマ名のみ（20文字以内）で回答してください。説明文は不要です。
+    - テーマ名のみ（20文字以内）で回答してください。
     """
-    
     model = genai.GenerativeModel("gemini-3.8-flash")
     response = model.generate_content(prompt)
     return response.text.strip()
 
 @app.post("/generate")
 async def generate_video(req: VideoRequest):
-    # テーマ未指定の場合は自動生成（重複排除付き）
     theme = req.theme
     if not theme:
         theme = generate_auto_theme()
     
-    # 1. 台本生成 (Gemini API - 自然な会話・文章フロー優先)
+    # 1. 台本 & Veo用カット割りプロンプトの生成
     system_instruction = """
-    あなたはYouTubeショート動画のヒットメーカーです。
-    視聴者のスクロールの手を止め、最後まで離脱させない構成で台本を作成してください。
+    あなたはYouTubeショート動画のプロデューサーです。
+    指定されたテーマに基づき、動画台本とVeo 3.1（動画生成AI）用の英語プロンプト群を作成してください。
     
-    【ナレーション文章（narration）作成時の重要ルール】
-    - 音声読み上げが自然に聞こえるよう、流れるような抑揚のある口語体（話し言葉）で書いてください。
-    - 意味のつながりを重視し、文章を無理に不自然な位置で短く区切らないでください。
-    - 読点「、」は自然なポーズが取れる適切な位置にのみ置いてください。
+    【ルール】
+    - narration: 抑揚のある自然な口語体（話し言葉）で記述。
+    - video_prompts: 台本のストーリー展開に合わせ、タレント（解説者）が背景と一体となって解説している様子を表現する英語プロンプトを4〜5個の配列で出力してください。
+    - 映像スタイルの統一: 9:16 vertical, photorealistic, charismatic Japanese presenter, modern cinematic studio setting を各プロンプトに必ず含めてください。
     
-    【出力フォーマット】
-    JSON形式で出力してください:
+    【出力フォーマット (JSON)】
     {
-      "title": "インパクトのあるタイトル",
-      "description": "概要欄（ハッシュタグ含む）",
-      "narration": "ナレーション文章"
+      "title": "タイトル",
+      "description": "概要欄",
+      "narration": "ナレーション文章",
+      "video_prompts": [
+        "A charismatic Japanese male presenter in modern clothing, looking shocked at camera, vertical 9:16, cinematic light",
+        "Close up of the presenter explaining with hand gestures, futuristic background, vertical 9:16",
+        "Presenter pointing upwards enthusiastically, cinematic atmosphere, vertical 9:16",
+        "Presenter smiling and wrapping up the explanation to the viewer, vertical 9:16"
+      ]
     }
     """
     
-    prompt = f"テーマ「{theme}」で、{req.duration}秒のYouTubeショート動画の台本を作成してください。"
+    prompt = f"テーマ「{theme}」で、{req.duration}秒のYouTubeショート動画用コンテンツを作成してください。"
     model = genai.GenerativeModel("gemini-3.8-flash", system_instruction=system_instruction)
     response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
     
@@ -118,25 +113,15 @@ async def generate_video(req: VideoRequest):
     communicate = edge_tts.Communicate(script["narration"], "ja-JP-NanamiNeural")
     await communicate.save(voice_path)
     
-    # 3. 実際の動画ファイル生成 (MoviePy - メモリ512MB制限対策版)
+    # 3. 映像生成・動的カット割り結合 (video_engine)
     video_path = "output_video.mp4"
-    audio_clip = AudioFileClip(voice_path)
+    video_prompts = script.get("video_prompts", [])
     
-    video_clip = ColorClip(size=(540, 960), color=(0, 0, 0), duration=audio_clip.duration)
-    video_clip = video_clip.with_audio(audio_clip)
-    
-    video_clip.write_videofile(
-        video_path,
-        fps=15,
-        codec="libx264",
-        audio_codec="aac",
-        threads=1,
-        preset="ultrafast",
-        logger=None
+    build_final_video_with_cuts(
+        voice_path=voice_path,
+        video_prompts=video_prompts,
+        output_path=video_path
     )
-    
-    audio_clip.close()
-    video_clip.close()
     
     # 4. YouTube自動投稿
     youtube_result = None
