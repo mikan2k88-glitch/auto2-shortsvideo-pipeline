@@ -11,11 +11,12 @@ from moviepy.video.compositing.CompositeVideoClip import concatenate_videoclips
 # Veo APIの仕様に基づく固定生成秒数
 VEO_FIXED_DURATION = 5
 
-# Veo APIで受け入れられる正式モデルIDリスト
+# Veo APIで有効なモデル名リスト
 VEO_MODELS = [
-    "veo-3.1-flashlight-predict-001",
+    "veo-3.0-generate-001",
     "veo-2.0-generate-001",
-    "veo-3.1-generate-001"
+    "veo-3.0",
+    "veo-2.0"
 ]
 
 def generate_veo_clip(prompt: str, output_path: str) -> str:
