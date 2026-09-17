@@ -11,6 +11,13 @@ from moviepy.video.compositing.CompositeVideoClip import concatenate_videoclips
 # Veo APIの仕様に基づく固定生成秒数
 VEO_FIXED_DURATION = 5
 
+# Veoモデルの正確なフォールバックリスト（関数より上に定義）
+VEO_MODELS = [
+    "veo-3.1",
+    "veo-3.1-flash",
+    "veo-2.0"
+]
+
 def generate_veo_clip(prompt: str, output_path: str) -> str:
     """
     Veo APIを呼び出し、指定されたプロンプトで5秒の背景動画を生成（モデルフォールバック付き）
