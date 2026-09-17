@@ -2,9 +2,11 @@ import os
 import time
 from typing import List
 from google import genai
+
+# MoviePy v2.0+ 対応インポート
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 from moviepy.video.io.VideoFileClip import VideoFileClip
-from moviepy.video.compositing.concatenate import concatenate_videoclips
+from moviepy.video.compositing.CompositeVideoClip import concatenate_videoclips
 
 # Veo APIの仕様に基づく固定生成秒数
 VEO_FIXED_DURATION = 5
