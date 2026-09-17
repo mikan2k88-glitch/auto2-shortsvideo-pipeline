@@ -59,11 +59,21 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
         raise TimeoutError("Veo の動画生成がタイムアウトしました。")
         
     result = operation.result
-    if not result.generated_videos:
-        raise RuntimeError("Veo から動画データが返されませんでした。")
-        
-    generated_video = result.generated_videos[0]
     
+    # --- 動画オブジェクト取得のフォールバック強化 ---
+    generated_videos = None
+    if hasattr(result, "generated_videos") and result.generated_videos:
+        generated_videos = result.generated_videos
+    elif hasattr(result, "response") and hasattr(result.response, "generated_videos"):
+        generated_videos = result.response.generated_videos
+        
+    if not generated_videos:
+        print(f"[Veo Engine] Raw Result: {result}")
+        raise RuntimeError(f"Veo から動画データが返されませんでした。(Result: {result})")
+        
+    generated_video = generated_videos[0]
+    
+    # --- バイナリデータ抽出のフォールバック ---
     video_bytes = None
     if hasattr(generated_video, "video_bytes") and generated_video.video_bytes:
         video_bytes = generated_video.video_bytes
@@ -86,7 +96,7 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
 
 
 def get_audio_duration_ffmpeg(file_path: str) -> float:
-    """ffprobe を使用して音声の正確な長さを取得（メモリ消費ゼロ）"""
+    """ffprobe を使用して音声の正確な長さを取得"""
     cmd = [
         "ffprobe", "-v", "error",
         "-show_entries", "format=duration",
@@ -99,12 +109,11 @@ def get_audio_duration_ffmpeg(file_path: str) -> float:
 
 def build_final_video_with_cuts(voice_path: str, video_prompts: List[str], output_path: str = "output_video.mp4") -> str:
     """
-    ffmpeg コマンドの直接呼び出しによる超軽量レンダリング（OOM完全回避版）
+    ffmpeg コマンドの直接呼び出しによる超軽量レンダリング
     """
     if not video_prompts:
         raise ValueError("video_prompts が空です。")
 
-    # 1. 音声尺の取得
     audio_duration = get_audio_duration_ffmpeg(voice_path)
     print(f"[Video Engine] 音声総尺: {audio_duration:.2f}秒")
     
@@ -113,18 +122,15 @@ def build_final_video_with_cuts(voice_path: str, video_prompts: List[str], outpu
     temp_concat_path = "temp_concat.mp4"
     
     try:
-        # 2. 各クリップの生成
         for i, prompt in enumerate(video_prompts):
             clip_path = f"veo_clip_{i}.mp4"
             generate_veo_clip(prompt, clip_path)
             generated_files.append(clip_path)
 
-        # 3. ffmpeg 用のファイルリスト作成
         with open(list_file_path, "w", encoding="utf-8") as f:
             for path in generated_files:
                 f.write(f"file '{path}'\n")
 
-        # 4. ffmpeg による超軽量動画結合
         print("[Video Engine] ffmpeg で動画クリップを結合中...")
         concat_cmd = [
             "ffmpeg", "-y",
@@ -136,7 +142,6 @@ def build_final_video_with_cuts(voice_path: str, video_prompts: List[str], outpu
         ]
         subprocess.run(concat_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        # 5. 音声の尺に合わせたループ＆トリミング＆音声合成処理
         print("[Video Engine] ffmpeg で音声合成および最終レンダリング中...")
         final_cmd = [
             "ffmpeg", "-y",
@@ -158,7 +163,6 @@ def build_final_video_with_cuts(voice_path: str, video_prompts: List[str], outpu
         print(f"[Video Engine] 最終動画レンダリング成功: {output_path}")
 
     finally:
-        # 一時ファイルのクリーンアップ
         for p in generated_files + [list_file_path, temp_concat_path]:
             if os.path.exists(p):
                 try:
