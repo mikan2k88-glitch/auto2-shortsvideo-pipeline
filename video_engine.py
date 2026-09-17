@@ -8,19 +8,18 @@ from moviepy.audio.io.AudioFileClip import AudioFileClip
 from moviepy.video.io.VideoFileClip import VideoFileClip
 from moviepy.video.compositing.CompositeVideoClip import concatenate_videoclips
 
-# Veo APIの仕様に基づく固定生成秒数
+# Veo 3.1 APIの仕様に基づく固定生成秒数 (4〜8の範囲で指定)
 VEO_FIXED_DURATION = 5
 
-# Gemini API (google-genai SDK) で正式サポートされているVeoモデルIDリスト
+# Veo 3.1 正式モデルリスト
 VEO_MODELS = [
     "veo-3.1-generate-preview",
-    "veo-3.1-fast-generate-preview",
-    "veo-2.0-generate-001"
+    "veo-3.1-fast-generate-preview"
 ]
 
 def generate_veo_clip(prompt: str, output_path: str) -> str:
     """
-    Veo APIを呼び出し、指定されたプロンプトで5秒の背景動画を生成（モデルフォールバック付き）
+    Veo 3.1 APIを呼び出し、指定されたプロンプトで背景動画を生成
     """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -33,7 +32,6 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
     operation = None
     last_error = None
     
-    # Veoモデルのフォールバック試行
     for model_name in VEO_MODELS:
         try:
             print(f"[Veo Engine] モデル '{model_name}' で試行中...")
@@ -45,7 +43,7 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
                     "duration_seconds": VEO_FIXED_DURATION,
                 }
             )
-            print(f"[Veo Engine] モデル '{model_name}' での呼び出し成功！")
+            print(f"[Veo Engine] モデル '{model_name}' でのリクエスト成功！")
             break
         except Exception as e:
             print(f"[Veo Engine] モデル '{model_name}' エラー: {e}")
