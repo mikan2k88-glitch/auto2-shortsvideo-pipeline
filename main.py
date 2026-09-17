@@ -20,6 +20,35 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 # 新SDKクライアントの初期化
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+# 2026年最新 3.x系 フォールバックモデルリスト
+FALLBACK_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite"
+]
+
+def generate_content_with_fallback(contents, config=None):
+    """
+    フォールバックチェーンを適用してGemini APIを呼び出す関数
+    """
+    last_error = None
+    for model_name in FALLBACK_MODELS:
+        try:
+            print(f"[Gemini API] モデル '{model_name}' で生成を試行中...")
+            kwargs = {"model": model_name, "contents": contents}
+            if config:
+                kwargs["config"] = config
+            response = client.models.generate_content(**kwargs)
+            print(f"[Gemini API] モデル '{model_name}' での生成成功！")
+            return response
+        except Exception as e:
+            print(f"[Gemini API] モデル '{model_name}' でエラーが発生しました: {e}")
+            last_error = e
+            continue
+            
+    raise RuntimeError(f"すべてのフォールバックモデルでの生成に失敗しました: {last_error}")
+
 # Supabaseクライアントの初期化
 supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
@@ -69,10 +98,9 @@ def generate_auto_theme():
     過去のテーマ一覧: {json.dumps(existing_themes, ensure_ascii=False)}
     - テーマ名のみ（20文字以内）で回答してください。
     """
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
+    
+    # フォールバック関数を使用
+    response = generate_content_with_fallback(contents=prompt)
     return response.text.strip()
 
 @app.post("/generate")
@@ -106,8 +134,8 @@ async def generate_video(req: VideoRequest):
     
     prompt = f"テーマ「{theme}」で、{req.duration}秒のYouTubeショート動画用コンテンツを作成してください。"
     
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
+    # フォールバック関数を使用
+    response = generate_content_with_fallback(
         contents=prompt,
         config={
             "system_instruction": system_instruction,
