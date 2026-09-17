@@ -1,12 +1,9 @@
 import os
 import time
+import subprocess
 import gc
 from typing import List
 from google import genai
-
-from moviepy.audio.io.AudioFileClip import AudioFileClip
-from moviepy.video.io.VideoFileClip import VideoFileClip
-from moviepy.video.compositing.CompositeVideoClip import concatenate_videoclips
 
 VEO_FIXED_DURATION = 4
 
@@ -88,72 +85,86 @@ def generate_veo_clip(prompt: str, output_path: str) -> str:
     return output_path
 
 
+def get_audio_duration_ffmpeg(file_path: str) -> float:
+    """ffprobe を使用して音声の正確な長さを取得（メモリ消費ゼロ）"""
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        file_path
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+    return float(result.stdout.strip())
+
+
 def build_final_video_with_cuts(voice_path: str, video_prompts: List[str], output_path: str = "output_video.mp4") -> str:
     """
-    1. 音声の長さ(audio_duration)を取得
-    2. 複数のVeo動画クリップを生成
-    3. 512MB RAM上限を考慮したメモリ節約結合処理
+    ffmpeg コマンドの直接呼び出しによる超軽量レンダリング（OOM完全回避版）
     """
     if not video_prompts:
         raise ValueError("video_prompts が空です。")
 
-    audio_clip = AudioFileClip(voice_path)
-    audio_duration = audio_clip.duration
+    # 1. 音声尺の取得
+    audio_duration = get_audio_duration_ffmpeg(voice_path)
     print(f"[Video Engine] 音声総尺: {audio_duration:.2f}秒")
     
     generated_files = []
+    list_file_path = "ffmpeg_concat_list.txt"
+    temp_concat_path = "temp_concat.mp4"
     
     try:
-        # 1. Veo クリップを生成
+        # 2. 各クリップの生成
         for i, prompt in enumerate(video_prompts):
             clip_path = f"veo_clip_{i}.mp4"
             generate_veo_clip(prompt, clip_path)
             generated_files.append(clip_path)
-            
-        # ガベージコレクションでAPI呼び出し時の不要メモリを即座に解放
-        gc.collect()
 
-        # 2. MoviePy クリップのオープン（メモリ節約のため解像度低めに処理）
-        video_clips = [VideoFileClip(f) for f in generated_files]
-        concatenated_video = concatenate_videoclips(video_clips, method="compose")
+        # 3. ffmpeg 用のファイルリスト作成
+        with open(list_file_path, "w", encoding="utf-8") as f:
+            for path in generated_files:
+                f.write(f"file '{path}'\n")
+
+        # 4. ffmpeg による超軽量動画結合
+        print("[Video Engine] ffmpeg で動画クリップを結合中...")
+        concat_cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", list_file_path,
+            "-c", "copy",
+            temp_concat_path
+        ]
+        subprocess.run(concat_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        # 5. 音声の尺に合わせたループ＆トリミング＆音声合成処理
+        print("[Video Engine] ffmpeg で音声合成および最終レンダリング中...")
+        final_cmd = [
+            "ffmpeg", "-y",
+            "-stream_loop", "-1",
+            "-i", temp_concat_path,
+            "-i", voice_path,
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "28",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-t", str(audio_duration),
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            output_path
+        ]
+        subprocess.run(final_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
-        # 3. トリミング・ループ
-        if concatenated_video.duration < audio_duration:
-            loop_count = int(audio_duration // concatenated_video.duration) + 1
-            final_video = concatenated_video.loop(n=loop_count).subclip(0, audio_duration)
-        else:
-            final_video = concatenated_video.subclip(0, audio_duration)
-            
-        final_video = final_video.with_audio(audio_clip)
-        
-        # 4. RAM超低消費書き出し設定
-        final_video.write_videofile(
-            output_path,
-            fps=15,
-            bitrate="1500k",
-            codec="libx264",
-            audio_codec="aac",
-            threads=1,
-            preset="ultrafast",
-            write_logfile=False,
-            logger=None
-        )
         print(f"[Video Engine] 最終動画レンダリング成功: {output_path}")
-        
+
     finally:
-        # メモリの確実な解放
-        try:
-            audio_clip.close()
-        except:
-            pass
-            
-        for path in generated_files:
-            if os.path.exists(path):
+        # 一時ファイルのクリーンアップ
+        for p in generated_files + [list_file_path, temp_concat_path]:
+            if os.path.exists(p):
                 try:
-                    os.remove(path)
+                    os.remove(p)
                 except Exception as e:
-                    print(f"一時ファイル削除エラー ({path}): {e}")
-                    
+                    print(f"一時ファイル削除エラー ({p}): {e}")
         gc.collect()
 
     return output_path
